@@ -6,7 +6,7 @@ This Python script converts Google Tasks data (exported as JSON) into Markdown f
 
 - Processes Google Tasks JSON export files containing multiple task lists
 - Converts each task list into a separate Markdown file
-- Maintains task status (completed/not completed) using checkbox syntax
+- Optionally maintains task status (completed/not completed) and "Updated" timestamp using checkbox syntax.
 - Preserves hierarchical structure of tasks and subtasks
 - Handles nested tasks with proper indentation
 - Skips empty tasks or tasks with only whitespace
@@ -86,7 +86,7 @@ You can easily modify the script to change the output format or add additional t
 
 ## Notes
 
-- The script skips completed tasks by default. If you want to include completed tasks, remove or comment out the relevant check in the `process_tasks` function.
+- The script skips completed tasks and "Updated" timestamps by default. If you want to include completed tasks, remove or comment out the relevant check in the `convert_google_tasks_to_obsidian` function.
 - Make sure you have write permissions for the output folder.
 
 For any issues or feature requests, please open an issue on the GitHub repository.
