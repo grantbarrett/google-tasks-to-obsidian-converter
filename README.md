@@ -4,24 +4,42 @@ This Python script converts Google Tasks data (exported as JSON) into Markdown f
 
 ## Features
 
-- Processes Google Tasks JSON export files
-- Converts task lists into separate Markdown files
+- Processes Google Tasks JSON export files containing multiple task lists
+- Converts each task list into a separate Markdown file
 - Maintains task status (completed/not completed) using checkbox syntax
-- Preserves task update timestamps
-- Handles parent-child relationships between tasks
-- Supports nested folder structures based on task list names
-- Creates necessary subdirectories automatically
+- Preserves hierarchical structure of tasks and subtasks
+- Handles nested tasks with proper indentation
+- Skips empty tasks or tasks with only whitespace
+- Sanitizes file names to ensure compatibility with various operating systems
+
+## Requirements
+
+- Python 3.x
+- `unidecode` library (install with `pip install unidecode`)
 
 ## Usage
 
-1. Ensure you have Python 3.x installed on your system.
-2. Place your Google Tasks JSON export file in a known location.
+1. Export your Google Tasks data using Google Takeout (instructions below).
+2. Place the exported JSON file in a known location on your computer.
 3. Modify the `json_file_path` and `output_folder` variables in the script to match your file locations.
 4. Run the script using: `python google_tasks_to_obsidian.py`
+
+## How to Export Google Tasks Data
+
+To obtain your Google Tasks data:
+
+1. Go to [Google Takeout](https://takeout.google.com/).
+2. Sign in to your Google account if you haven't already.
+3. Deselect all products, then scroll down and select only "Tasks".
+4. Click "Next step" and choose your delivery method (e.g., "Send download link via email").
+5. Click "Create export".
+6. Wait for the export to complete (you'll receive an email when it's ready).
+7. Download the exported file and extract the JSON file containing your tasks data.
 
 ## Input Format
 
 The script expects a JSON file with the following structure:
+
 ```json
 {
   "kind": "tasks#taskLists",
@@ -29,7 +47,7 @@ The script expects a JSON file with the following structure:
     {
       "kind": "tasks#tasks",
       "id": "...",
-      "title": "List Title",
+      "title": "List Title 1",
       "updated": "...",
       "items": [
         {
@@ -50,23 +68,25 @@ The script expects a JSON file with the following structure:
 
 ## Output
 
-The script generates Markdown files in the specified output folder. Each task list becomes a separate `.md` file, with tasks represented as checkboxes. The file structure mirrors any nested folders in the task list titles.
+The script generates Markdown files in the specified output folder. Each task list becomes a separate `.md` file, with tasks represented as checkboxes. The hierarchical structure of tasks is maintained through indentation.
 
 Example output:
+
 ```markdown
-# List Title
-
-- [ ] Task 1
-   Updated: 2023-06-29 14:30:00
-
-- [x] Completed Task
-   Updated: 2023-06-28 09:15:00
-   Parent: parentTaskId
-
-- [ ] Another Task
-   Updated: 2023-06-29 16:45:00
+- [ ] Top-level Task 1
+  - [ ] Subtask 1.1
+  - [ ] Subtask 1.2
+    - [ ] Sub-subtask 1.2.1
+- [ ] Top-level Task 2
 ```
 
 ## Customization
 
 You can easily modify the script to change the output format or add additional task properties to the Markdown files.
+
+## Notes
+
+- The script skips completed tasks by default. If you want to include completed tasks, remove or comment out the relevant check in the `process_tasks` function.
+- Make sure you have write permissions for the output folder.
+
+For any issues or feature requests, please open an issue on the GitHub repository.
