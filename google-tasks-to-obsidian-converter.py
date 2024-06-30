@@ -12,35 +12,65 @@ def sanitize_filename(filename):
     sanitized = sanitized.strip('. ')
     return sanitized if sanitized else 'Untitled'
 
-def process_tasks(tasks, parent_id=None, indent=0):
+def escape_markdown(text):
     """
-    Recursively process tasks and their subtasks.
+    Escape Markdown-like syntax in the text while preserving URLs.
     """
-    task_lines = []
-    for task in tasks:
-        if task.get('parent') != parent_id:
-            continue
-        
+    # First, we'll identify and temporarily replace URLs
+    url_pattern = r'(https?://[^\s]+)'
+    urls = re.findall(url_pattern, text)
+    for i, url in enumerate(urls):
+        placeholder = f'URLPLACEHOLDER{i}'
+        text = text.replace(url, placeholder)
+    
+    # Now escape Markdown characters
+    escape_chars = r'\\`*_{}[]()#+-.!'
+    text = re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+    
+    # Finally, replace URL placeholders with the original URLs
+    for i, url in enumerate(urls):
+        placeholder = f'URLPLACEHOLDER{i}'
+        text = text.replace(placeholder, url)
+    
+    return text
+
+def process_tasks(tasks):
+    """
+    Process tasks and their subtasks, maintaining correct hierarchy.
+    """
+    def process_task(task, indent=0):
+        task_lines = []
         title = task.get('title', '').strip()
         if not title:
-            continue
+            return task_lines
 
         status = '- [x]' if task.get('status') == 'completed' else '- [ ]'
-        task_line = f"{'  ' * indent}{status} {title}\n"
+        escaped_title = escape_markdown(title)
+        task_line = f"{'  ' * indent}{status} {escaped_title}\n"
         task_lines.append(task_line)
 
-        # Recursively process subtasks
-        subtasks = process_tasks(tasks, task['id'], indent + 1)
-        task_lines.extend(subtasks)
+        # Process subtasks
+        for subtask in tasks:
+            if subtask.get('parent') == task['id']:
+                task_lines.extend(process_task(subtask, indent + 1))
 
-    return task_lines
+        return task_lines
 
-def convert_google_tasks_to_obsidian(json_file_path, output_folder):
+    all_task_lines = []
+    for task in tasks:
+        if 'parent' not in task:
+            all_task_lines.extend(process_task(task))
+
+    return all_task_lines
+
+def convert_google_tasks_to_obsidian(json_file_path, output_folder, include_completed=False, include_updated=False):
     """
     Convert Google Tasks JSON to Obsidian markdown files.
     
     :param json_file_path: Path to the input JSON file
     :param output_folder: Path to the output folder for markdown files
+    :param include_completed: Whether to include completed tasks (default: False)
+    :param include_updated: Whether to include "Updated" timestamps (default: False)
     """
     try:
         with open(json_file_path, 'r') as file:
@@ -54,6 +84,9 @@ def convert_google_tasks_to_obsidian(json_file_path, output_folder):
             list_title = task_list.get('title', 'Untitled List')
             tasks = task_list.get('items', [])
 
+            if not include_completed:
+                tasks = [task for task in tasks if task.get('status') != 'completed']
+
             sanitized_title = sanitize_filename(list_title)
             file_name = f"{sanitized_title}.md"
             file_path = os.path.join(output_folder, file_name)
@@ -61,6 +94,12 @@ def convert_google_tasks_to_obsidian(json_file_path, output_folder):
             with open(file_path, 'w') as md_file:
                 task_lines = process_tasks(tasks)
                 md_file.writelines(task_lines)
+
+                if include_updated:
+                    for task in tasks:
+                        updated = task.get('updated', '')
+                        if updated:
+                            md_file.write(f"Updated: {updated}\n")
 
             print(f"Conversion complete. Obsidian file created: {file_path}")
 
@@ -78,4 +117,6 @@ json_file_path = '/Users/grantbarrett/Desktop/Tasks.json'
 output_folder = '/Users/grantbarrett/Documents/General'
 
 # CHANGE HERE: Modify these paths to match your system
-convert_google_tasks_to_obsidian(json_file_path, output_folder)
+# Set include_completed=True to include completed tasks
+# Set include_updated=True to include "Updated" timestamps
+convert_google_tasks_to_obsidian(json_file_path, output_folder, include_completed=False, include_updated=False)
