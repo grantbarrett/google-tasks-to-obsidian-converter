@@ -1,64 +1,81 @@
-# This script converts the JSON file created by a Google Takeouts export to Obsidian .md files in the given vault folder. Before running, change the values for json_file_path and output_folder. You can create your Google Tasks export file here: https://takeout.google.com/settings/takeout
-
 import json
 import os
-from datetime import datetime
+import re
+from unidecode import unidecode
+
+def sanitize_filename(filename):
+    """
+    Sanitize the filename by converting non-ASCII characters and removing invalid characters.
+    """
+    filename = unidecode(filename)
+    sanitized = re.sub(r'[<>:"/\\|?*]', '_', filename)
+    sanitized = sanitized.strip('. ')
+    return sanitized if sanitized else 'Untitled'
+
+def process_tasks(tasks, parent_id=None, indent=0):
+    """
+    Recursively process tasks and their subtasks.
+    """
+    task_lines = []
+    for task in tasks:
+        if task.get('parent') != parent_id:
+            continue
+        
+        title = task.get('title', '').strip()
+        if not title:
+            continue
+
+        status = '- [x]' if task.get('status') == 'completed' else '- [ ]'
+        task_line = f"{'  ' * indent}{status} {title}\n"
+        task_lines.append(task_line)
+
+        # Recursively process subtasks
+        subtasks = process_tasks(tasks, task['id'], indent + 1)
+        task_lines.extend(subtasks)
+
+    return task_lines
 
 def convert_google_tasks_to_obsidian(json_file_path, output_folder):
-    # Read the JSON file
-    with open(json_file_path, 'r') as file:
-        tasks_data = json.load(file)
+    """
+    Convert Google Tasks JSON to Obsidian markdown files.
+    
+    :param json_file_path: Path to the input JSON file
+    :param output_folder: Path to the output folder for markdown files
+    """
+    try:
+        with open(json_file_path, 'r') as file:
+            data = json.load(file)
 
-    # Create output folder if it doesn't exist
-    os.makedirs(output_folder, exist_ok=True)
+        os.makedirs(output_folder, exist_ok=True)
 
-    # Process each task list
-    for task_list in tasks_data.get('items', []):
-        list_title = task_list.get('title', 'Untitled List')
-        tasks = task_list.get('items', [])
+        task_lists = data.get('items', [])
 
-        # Create a markdown file for each task list
-        file_name = f"{list_title.replace(' ', '_')}.md"
-        
-        # Split the list_title to get potential subdirectories
-        path_parts = list_title.split('/')
-        
-        # Construct the full path, creating subdirectories as needed
-        current_path = output_folder
-        for part in path_parts[:-1]:  # Exclude the last part (file name)
-            current_path = os.path.join(current_path, part)
-            os.makedirs(current_path, exist_ok=True)
-        
-        file_path = os.path.join(current_path, f"{path_parts[-1].replace(' ', '_')}.md")
+        for task_list in task_lists:
+            list_title = task_list.get('title', 'Untitled List')
+            tasks = task_list.get('items', [])
 
-        with open(file_path, 'w') as md_file:
-            md_file.write(f"# {path_parts[-1]}\n\n")
+            sanitized_title = sanitize_filename(list_title)
+            file_name = f"{sanitized_title}.md"
+            file_path = os.path.join(output_folder, file_name)
 
-            # Process each task in the list
-            for task in tasks:
-                title = task.get('title', 'Untitled Task')
-                status = '- [x]' if task.get('status') == 'completed' else '- [ ]'
-                updated = task.get('updated', '')
-                
-                # Write task to file
-                md_file.write(f"{status} {title}\n")
-                
-                if updated:
-                    try:
-                        formatted_date = datetime.fromisoformat(updated.replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M:%S")
-                        md_file.write(f"   Updated: {formatted_date}\n")
-                    except ValueError:
-                        md_file.write(f"   Updated: {updated}\n")
-                
-                # Handle parent-child relationship
-                if 'parent' in task:
-                    md_file.write(f"   Parent: {task['parent']}\n")
-                
-                md_file.write("\n")
+            with open(file_path, 'w') as md_file:
+                task_lines = process_tasks(tasks)
+                md_file.writelines(task_lines)
 
-    print(f"Conversion complete. Obsidian files created in {output_folder}")
+            print(f"Conversion complete. Obsidian file created: {file_path}")
 
-# Example usage with the provided file paths
-json_file_path = '/your/path/to/input/Tasks.json'
-output_folder = '/your/path/to/Obsidian/Vault'
+    except FileNotFoundError:
+        print(f"Error: The file {json_file_path} was not found.")
+    except json.JSONDecodeError:
+        print(f"Error: The file {json_file_path} is not a valid JSON file.")
+    except PermissionError:
+        print(f"Error: Permission denied when trying to create or write to {output_folder}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {str(e)}")
+
+# Example usage with the provided file path
+json_file_path = '/Users/grantbarrett/Desktop/Tasks.json'
+output_folder = '/Users/grantbarrett/Documents/General'
+
+# CHANGE HERE: Modify these paths to match your system
 convert_google_tasks_to_obsidian(json_file_path, output_folder)
