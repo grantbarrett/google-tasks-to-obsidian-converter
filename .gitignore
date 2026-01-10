@@ -1,0 +1,10 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+.venv/
+
+# Local data / outputs
+tests/
+*project-notes.txt
