@@ -1,28 +1,74 @@
 # Google Tasks to Obsidian Converter
 
-This Python script converts Google Tasks data (exported as JSON) into Markdown files compatible with Obsidian, a knowledge management application.
+This Python script converts **Google Tasks** data (exported as JSON via Google Takeout) into **Markdown files** compatible with **[Obsidian](https://obsidian.md/)**, a knowledge management application.
+
+The script has evolved from a simple converter into a fully featured, CLI-driven tool that preserves task structure, metadata, and status, while remaining safe and predictable to use.
+
+---
 
 ## Features
 
 - Processes Google Tasks JSON export files containing multiple task lists
-- Converts each task list into a separate Markdown file
-- Optionally maintains task status (completed/not completed) and "Updated" timestamp using checkbox syntax.
-- Preserves hierarchical structure of tasks and subtasks
-- Handles nested tasks with proper indentation
-- Skips empty tasks or tasks with only whitespace
-- Sanitizes file names to ensure compatibility with various operating systems
+- Converts each task list into a separate Markdown file (default)
+- Optional single consolidated Markdown file
+- **Obsidian-locked output by default**
+  - YAML frontmatter
+  - Metadata properties
+  - Tags for filtering
+- Optional **generic Markdown** output (no YAML, no tags)
+- Maintains task status using checkbox syntax (`[ ]` / `[x]`)
+- Preserves **hierarchical structure** of tasks and subtasks
+- Handles **nested tasks with proper indentation**
+- Includes **created** and **updated** timestamps
+- Optional handling of completed tasks:
+  - skip (default)
+  - keep
+  - only completed
+- Optionally skips empty or whitespace-only tasks
+- Sanitizes file names for filesystem safety
+- Dry-run mode for safe previewing
+
+---
 
 ## Requirements
 
-- Python 3.x
-- `unidecode` library (install with `pip install unidecode`)
+- Python **3.10+**
+- `unidecode` library
+
+Install dependencies (recommended inside a virtual environment):
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install unidecode
+```
+
+---
 
 ## Usage
 
+```text
+usage: google-tasks-to-obsidian-converter.py [--help]
+       [-i INPUT] [-o OUTPUT]
+       [--obsidian (default) | --md]
+       [--collapse] [--single-file] [--dry-run] [--info]
+       [--completed {skip,keep,only}] [--clean]
+```
+### Basic example
+
+```bash
+python google-tasks-to-obsidian-converter.py   -i ~/Takeout/Tasks/Tasks.json   -o ~/Obsidian/Tasks
+```
+
+---
+
+## Workflow
+
 1. Export your Google Tasks data using Google Takeout (instructions below).
 2. Place the exported JSON file in a known location on your computer.
-3. Modify the `json_file_path` and `output_folder` variables in the script to match your file locations.
-4. Run the script using: `python google_tasks_to_obsidian.py`
+3. Decide which options to use for your export by studying the section "Command-line Options" below.
+4. Run the script using: `python google-tasks-to-obsidian-converter.py -i YourInputFile -o YourDestinationDirectory [List Your Options]`
+
 
 ## How to Export Google Tasks Data
 
@@ -35,6 +81,45 @@ To obtain your Google Tasks data:
 5. Click "Create export".
 6. Wait for the export to complete (you'll receive an email when it's ready).
 7. Download the exported file and extract the JSON file containing your tasks data.
+
+---
+
+## Command-line Options
+
+### Input / Output
+
+| Option | Description |
+|------|------------|
+| `-i, --input` | Path to Google Tasks Takeout JSON file |
+| `-o, --output` | Output directory (or file with `--single-file`) |
+
+### Output Mode
+
+| Option | Description |
+|------|------------|
+| `--obsidian` | Obsidian-locked formatting (default) |
+| `--md` | Generic Markdown output |
+
+### Task Handling
+
+| Option | Description |
+|------|------------|
+| `--completed skip` | Skip completed tasks (default) |
+| `--completed keep` | Include completed and open tasks |
+| `--completed only` | Export only completed tasks |
+| `--clean` | Skip tasks with empty titles, notes, and links |
+
+### Other Options
+
+| Option | Description |
+|------|------------|
+| `--collapse` | Collapse multi-line notes into one line |
+| `--single-file` | Write all task lists into one Markdown file |
+| `--dry-run` | Preview output without writing files |
+| `--info` | Warn when task list titles are modified |
+
+
+---
 
 ## Input Format
 
@@ -68,7 +153,7 @@ The script expects a JSON file with the following structure:
 
 ## Output
 
-The script generates Markdown files in the specified output folder. Each task list becomes a separate `.md` file, with tasks represented as checkboxes. The hierarchical structure of tasks is maintained through indentation.
+The script generates Markdown files in the specified output folder. Each task list becomes a separate `.md` file (unless --single-file was specified), with tasks represented as checkboxes. The hierarchical structure of tasks is maintained through indentation.
 
 Example output:
 
@@ -80,13 +165,50 @@ Example output:
 - [ ] Top-level Task 2
 ```
 
-## Customization
+In **Obsidian mode**, files include YAML frontmatter and metadata:
 
-You can easily modify the script to change the output format or add additional task properties to the Markdown files.
+```yaml
+---
+source: google-tasks
+task_list: "Personal Tasks"
+task_list_id: "MDg1MDkx..."
+exported: 2026-01-10T06:15:00+00:00
+---
+```
+
+---
+
+## Filename Safety
+
+Task list titles may contain characters that are illegal in filenames.
+
+The script automatically replaces:
+
+```
+/ : * ? " < > | '
+```
+
+with underscores.
+
+Example:
+
+```
+Richard's Tasks / Inbox
+→ Richard_s_Tasks_Inbox_<id>.md
+```
+
+Use `--info` to print warnings when this occurs.
+
+---
 
 ## Notes
 
-- The script skips completed tasks and "Updated" timestamps by default. If you want to include completed tasks, remove or comment out the relevant check in the `convert_google_tasks_to_obsidian` function.
-- Make sure you have write permissions for the output folder.
+- The script is designed for **command-line usage**; no in-file configuration is required
+- Task hierarchy is preserved when parent/child relationships exist in the export
+- The script is intentionally conservative and will not guess missing data
 
-For any issues or feature requests, please open an issue on the GitHub repository.
+---
+
+## License
+
+See repository license.
