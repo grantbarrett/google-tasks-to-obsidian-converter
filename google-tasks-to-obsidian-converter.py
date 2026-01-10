@@ -5,16 +5,19 @@ google-tasks-to-obsidian-converter.py
 
 Convert a Google Tasks Takeout JSON export to Markdown files suitable for Obsidian.
 
-Key features
+Highlights
 - One file per task list (default) OR a single consolidated file (--single-file)
 - Obsidian-locked formatting by default (--obsidian) including YAML frontmatter + tags
 - Generic Markdown output available (--md)
 - Preserves task notes (second line and beyond) and links metadata
 - Includes created/updated timestamps
-- Safe filename generation (prevents "/" and other illegal filename chars)
+- Safe filename generation (prevents '/' and other illegal filename chars, incl. "'")
 - Optional warnings/info output when titles are modified (--info)
 - Dry-run mode to preview outputs without writing (--dry-run)
 - Optional note collapsing (--collapse)
+- NEW: Keep/skip completed tasks via --completed {skip,keep,only} (default: skip)
+- NEW: Preserve hierarchical structure of tasks/subtasks (nested indentation)
+- NEW: Skip empty/whitespace-only tasks via --clean
 
 Dependency
 - unidecode (install inside your venv):  pip install unidecode
@@ -25,12 +28,11 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import sys
 import textwrap
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional
 
 from unidecode import unidecode
 
@@ -39,7 +41,7 @@ from unidecode import unidecode
 # Filename / path safety
 # -----------------------------
 
-# Illegal on Windows; "/" breaks paths on Unix/macOS; "'" is annoying in shells/URLs
+# Illegal on Windows; '/' breaks paths on Unix/macOS; "'" is annoying in shells/URLs.
 _ILLEGAL_FILENAME_CHARS = r"[\/:*?\"<>|']"
 
 
@@ -48,13 +50,9 @@ def safe_filename(name: str) -> tuple[str, bool]:
     Convert arbitrary text into a filesystem-safe filename.
 
     Returns (safe_name, was_modified).
-    
-	Notes
-    -----
-    - Replaces characters illegal on Windows and problematic on Unix (including '/')
-    - Collapses whitespace to underscores
-    - Uses unidecode to normalize unicode for portability
-    Example: "Richard's File" -> ("Richard_s_File", True)
+
+    Example:
+      "Richard's File" -> ("Richard_s_File", True)
     """
     original = name
     safe = unidecode(name).strip()
@@ -64,12 +62,6 @@ def safe_filename(name: str) -> tuple[str, bool]:
     if not safe:
         safe = "Untitled"
     return safe, (safe != original)
-
-
-# Illegal on Windows; "/" also breaks paths on Unix/macOS.
-_ILLEGAL_FILENAME_CHARS = r"[\/:*?\"<>|']"
-
-
 
 
 # -----------------------------
@@ -85,7 +77,6 @@ def _parse_google_rfc3339(ts: str) -> Optional[datetime]:
     if not ts:
         return None
     try:
-        # Google uses trailing 'Z' for UTC; Python's fromisoformat prefers '+00:00'
         if ts.endswith("Z"):
             ts = ts[:-1] + "+00:00"
         return datetime.fromisoformat(ts).astimezone(timezone.utc)
@@ -118,22 +109,16 @@ _COLLAPSE_MAX_CHARS = 240
 
 
 def _collapse_text(text: str) -> str:
-    """
-    Collapse multi-line notes into a single line and truncate to a sane length.
-
-    This prevents extremely long notes from producing huge multi-line task blocks.
-    """
+    """Collapse multi-line notes into a single line and truncate."""
     one_line = " / ".join([ln.strip() for ln in text.splitlines() if ln.strip()])
     one_line = re.sub(r"\s+", " ", one_line).strip()
     if len(one_line) > _COLLAPSE_MAX_CHARS:
-        one_line = one_line[: _COLLAPSE_MAX_CHARS].rstrip() + "…"
+        one_line = one_line[:_COLLAPSE_MAX_CHARS].rstrip() + "…"
     return one_line
 
 
 def _derive_tags(task: Dict[str, Any]) -> List[str]:
-    """
-    Derive simple Obsidian tags based on task metadata (conservative, low-noise).
-    """
+    """Derive conservative Obsidian tags based on task metadata."""
     tags = ["#google-task"]
     links = task.get("links") or []
     link_types = {str(l.get("type", "")).lower() for l in links if isinstance(l, dict)}
@@ -146,43 +131,53 @@ def _derive_tags(task: Dict[str, Any]) -> List[str]:
     return tags
 
 
-def format_task(task: Dict[str, Any], fmt: FormatOptions) -> str:
+def _is_effectively_empty_task(task: Dict[str, Any]) -> bool:
     """
-    Format one Google task as Markdown.
+    True if the task contains no meaningful content:
+    - title empty/whitespace
+    - notes empty/whitespace
+    - no links
+    """
+    title = str(task.get("title", "")).strip()
+    notes = str(task.get("notes", "") or "").strip()
+    links = task.get("links") or []
+    has_links = any(isinstance(l, dict) and str(l.get("link", "")).strip() for l in links)
+    return (not title) and (not notes) and (not has_links)
 
-    Output structure (Obsidian-locked)
-    - [ ] Title
-      Notes line(s)...
-      links:: <url> (desc)
-      created:: <iso>
-      updated:: <iso>
-      #google-task #chat ...
 
-    Output structure (Generic Markdown)
-    - [ ] Title
-      Notes line(s)...
-      Link: <url> (desc)
-      Created: <iso>
-      Updated: <iso>
+def format_task(task: Dict[str, Any], fmt: FormatOptions, level: int = 0, clean: bool = False) -> str:
+    """
+    Format one task as Markdown.
+
+    - Maintains task status using checkbox syntax: [ ] vs [x]
+    - Supports nested indentation (level >= 0)
+
+    If clean=True, tasks should already have been filtered; the function still
+    behaves safely if called on an empty task.
     """
     lines: List[str] = []
 
+    base_indent = "  " * level  # 2 spaces per nesting level
+    meta_indent = base_indent + "  "  # metadata lines are indented under the bullet
+
     title = unidecode(str(task.get("title", "")).strip())
     if not title:
-        title = "Untitled task"
-    status = task.get("status", "needsAction")
+        title = "Untitled task"  # only used if --clean is NOT filtering it out
+
+    status = str(task.get("status", "needsAction"))
     checkbox = "x" if status == "completed" else " "
-    lines.append(f"- [{checkbox}] {title}")
+    lines.append(f"{base_indent}- [{checkbox}] {title}")
 
     # Notes: must appear on 2nd line and beyond
-    notes = task.get("notes") or ""
-    notes = str(notes)
+    notes = str(task.get("notes", "") or "")
     if notes.strip():
         if fmt.collapse_notes:
-            lines.append(f"  {unidecode(_collapse_text(notes))}")
+            lines.append(f"{meta_indent}{unidecode(_collapse_text(notes))}")
         else:
             for ln in notes.strip().splitlines():
-                lines.append(f"  {unidecode(ln.strip())}")
+                ln = ln.strip()
+                if ln:
+                    lines.append(f"{meta_indent}{unidecode(ln)}")
 
     # Links / metadata
     links = task.get("links") or []
@@ -196,20 +191,19 @@ def format_task(task: Dict[str, Any], fmt: FormatOptions) -> str:
             continue
 
         if fmt.obsidian:
-            # Dataview-friendly key:: value format
             if desc:
-                lines.append(f"  link:: {url} ({desc})")
+                lines.append(f"{meta_indent}link:: {url} ({desc})")
             elif ltype:
-                lines.append(f"  link:: {url} ({ltype})")
+                lines.append(f"{meta_indent}link:: {url} ({ltype})")
             else:
-                lines.append(f"  link:: {url}")
+                lines.append(f"{meta_indent}link:: {url}")
         else:
             if desc:
-                lines.append(f"  Link: {url} ({desc})")
+                lines.append(f"{meta_indent}Link: {url} ({desc})")
             elif ltype:
-                lines.append(f"  Link: {url} ({ltype})")
+                lines.append(f"{meta_indent}Link: {url} ({ltype})")
             else:
-                lines.append(f"  Link: {url}")
+                lines.append(f"{meta_indent}Link: {url}")
 
     # Timestamps
     created_dt = _parse_google_rfc3339(str(task.get("created", "")).strip())
@@ -219,16 +213,15 @@ def format_task(task: Dict[str, Any], fmt: FormatOptions) -> str:
 
     if fmt.obsidian:
         if created_s:
-            lines.append(f"  created:: {created_s}")
+            lines.append(f"{meta_indent}created:: {created_s}")
         if updated_s:
-            lines.append(f"  updated:: {updated_s}")
-        # Tags last (on their own indented line so Tasks plugin still sees the task)
-        lines.append(f"  {' '.join(_derive_tags(task))}")
+            lines.append(f"{meta_indent}updated:: {updated_s}")
+        lines.append(f"{meta_indent}{' '.join(_derive_tags(task))}")
     else:
         if created_s:
-            lines.append(f"  Created: {created_s}")
+            lines.append(f"{meta_indent}Created: {created_s}")
         if updated_s:
-            lines.append(f"  Updated: {updated_s}")
+            lines.append(f"{meta_indent}Updated: {updated_s}")
 
     return "\n".join(lines)
 
@@ -243,16 +236,16 @@ def format_file_header(
     consolidated: bool = False,
     list_count: Optional[int] = None,
 ) -> str:
-    """
-    Create a file header.
-
-    Obsidian mode: YAML frontmatter with consistent properties.
-    Generic mode: simple Markdown heading.
-    """
+    """Create a file header."""
     exported_s = _fmt_dt(exported_at.astimezone(timezone.utc))
 
     if fmt.obsidian:
-        props: List[str] = ["---", "source: google-tasks", f"exported: {exported_s}", f"input_file: {str(input_path)}"]
+        props: List[str] = [
+            "---",
+            "source: google-tasks",
+            f"exported: {exported_s}",
+            f"input_file: {str(input_path)}",
+        ]
         if consolidated and list_count is not None:
             props.append(f"lists: {list_count}")
         if list_title is not None:
@@ -260,18 +253,20 @@ def format_file_header(
         if list_id is not None:
             props.append(f'task_list_id: "{list_id}"')
         props.append("---")
+
         body_title = ""
         if list_title and not consolidated:
             body_title = f"# {list_title}\n"
         elif consolidated:
             body_title = "# Google Tasks Export\n"
         return "\n".join(props) + "\n\n" + body_title
-    else:
-        if consolidated:
-            return "# Google Tasks Export\n\n"
-        if list_title:
-            return f"# {list_title}\n\n"
-        return ""
+
+    # Generic Markdown
+    if consolidated:
+        return "# Google Tasks Export\n\n"
+    if list_title:
+        return f"# {list_title}\n\n"
+    return ""
 
 
 # -----------------------------
@@ -279,19 +274,113 @@ def format_file_header(
 # -----------------------------
 
 def _iter_tasklists(data: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
-    """
-    Yield task list objects from the Takeout JSON structure.
-    """
+    """Yield task list objects from the Takeout JSON structure."""
     for tl in data.get("items", []) or []:
         if isinstance(tl, dict):
             yield tl
 
 
 def _ensure_output_parent(path: Path) -> None:
-    """
-    Create parent directories for a file path.
-    """
+    """Create parent directories for a file path."""
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _task_sort_key(task: Dict[str, Any], fallback_index: int) -> tuple:
+    """
+    Sort key to keep stable ordering:
+    - Google Tasks may include 'position' (a sortable string)
+    - otherwise use original appearance order
+    """
+    pos = task.get("position")
+    if isinstance(pos, str) and pos:
+        return (0, pos, fallback_index)
+    return (1, "", fallback_index)
+
+
+def _build_task_tree(
+    tasks: List[Dict[str, Any]],
+    *,
+    completed_mode: str,
+    clean: bool,
+) -> List[Dict[str, Any]]:
+    """
+    Build a hierarchical forest of tasks based on id/parent relationships.
+
+    Returns a list of root tasks, where each task may have an injected key:
+      '_children': List[task]
+
+    completed_mode:
+      - 'skip' : exclude completed tasks
+      - 'keep' : include both completed and incomplete tasks
+      - 'only' : include only completed tasks
+
+    clean:
+      - if True, drop tasks that are empty/whitespace-only (title+notes+links empty)
+    """
+    filtered: List[Dict[str, Any]] = []
+    for idx, t in enumerate(tasks):
+        if not isinstance(t, dict):
+            continue
+
+        if clean and _is_effectively_empty_task(t):
+            continue
+
+        status = str(t.get("status", "needsAction"))
+        is_completed = (status == "completed")
+
+        if completed_mode == "skip" and is_completed:
+            continue
+        if completed_mode == "only" and not is_completed:
+            continue
+
+        # Store original ordering index for stable sorting
+        t["_orig_index"] = idx
+        t["_children"] = []
+        filtered.append(t)
+
+    by_id: Dict[str, Dict[str, Any]] = {}
+    for t in filtered:
+        tid = str(t.get("id", "")).strip()
+        if tid:
+            by_id[tid] = t
+
+    roots: List[Dict[str, Any]] = []
+    for t in filtered:
+        parent_id = str(t.get("parent", "") or "").strip()
+        if parent_id and parent_id in by_id:
+            by_id[parent_id]["_children"].append(t)
+        else:
+            roots.append(t)
+
+    def sort_recursive(node_list: List[Dict[str, Any]]) -> None:
+        node_list.sort(key=lambda n: _task_sort_key(n, int(n.get("_orig_index", 0))))
+        for n in node_list:
+            sort_recursive(n.get("_children", []))
+
+    sort_recursive(roots)
+    return roots
+
+
+def _render_task_tree(
+    roots: List[Dict[str, Any]],
+    fmt: FormatOptions,
+    *,
+    clean: bool,
+    level: int = 0,
+) -> str:
+    """Render root nodes (each may contain '_children') into nested markdown."""
+    parts: List[str] = []
+
+    def walk(node: Dict[str, Any], lvl: int) -> None:
+        parts.append(format_task(node, fmt, level=lvl, clean=clean))
+        for child in node.get("_children", []) or []:
+            if isinstance(child, dict):
+                walk(child, lvl + 1)
+
+    for r in roots:
+        walk(r, level)
+
+    return "\n\n".join(parts) + ("\n" if parts else "")
 
 
 def convert_tasks(
@@ -301,6 +390,8 @@ def convert_tasks(
     fmt: FormatOptions,
     single_file: bool,
     dry_run: bool,
+    completed_mode: str,
+    clean: bool,
 ) -> None:
     """
     Convert the Takeout JSON into markdown outputs.
@@ -324,7 +415,6 @@ def convert_tasks(
         else:
             _ensure_output_parent(output_path)
 
-        # Build full content in memory (safe and simple at this scale)
         parts: List[str] = [
             format_file_header(
                 fmt=fmt,
@@ -340,22 +430,13 @@ def convert_tasks(
             list_id = str(tl.get("id", "noid"))
             section_title = raw_title.strip() or "Unnamed List"
 
-            if fmt.obsidian:
-                parts.append(f"## {section_title}\n")
-            else:
-                parts.append(f"## {section_title}\n")
-
-            # List-level context can be useful in a consolidated file
+            parts.append(f"## {section_title}\n")
             if fmt.obsidian:
                 parts.append(f"task_list_id:: {list_id}\n")
 
-            for task in tl.get("items", []) or []:
-                if not isinstance(task, dict):
-                    continue
-                if task.get("status") == "completed":
-                    continue
-                parts.append(format_task(task, fmt) + "\n")
-
+            items = tl.get("items", []) or []
+            tree_roots = _build_task_tree(items, completed_mode=completed_mode, clean=clean)
+            parts.append(_render_task_tree(tree_roots, fmt, clean=clean, level=0))
             parts.append("\n")
 
         content = "".join(parts)
@@ -364,7 +445,6 @@ def convert_tasks(
             print("DRY-RUN: content generation completed (not writing).")
         else:
             output_path.write_text(content, encoding="utf-8")
-
         return
 
     # Per-list files
@@ -395,15 +475,11 @@ def convert_tasks(
             consolidated=False,
         )
 
-        body_parts: List[str] = [header]
-        for task in tl.get("items", []) or []:
-            if not isinstance(task, dict):
-                continue
-            if task.get("status") == "completed":
-                continue
-            body_parts.append(format_task(task, fmt) + "\n\n")
+        items = tl.get("items", []) or []
+        tree_roots = _build_task_tree(items, completed_mode=completed_mode, clean=clean)
+        body = _render_task_tree(tree_roots, fmt, clean=clean, level=0)
 
-        content = "".join(body_parts)
+        content = header + body + ("\n" if body and not body.endswith("\n") else "")
 
         if dry_run:
             print(f"DRY-RUN: would write {out_file} ({len(content)} chars)")
@@ -427,8 +503,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
           # Choose output directory (per-list files)
           python google-tasks-to-obsidian-converter.py -i Tasks.json -o ~/Tasks-Converted
 
-          # Single consolidated file (if -o is a directory, a default filename is used)
-          python google-tasks-to-obsidian-converter.py -i Tasks.json -o ~/Tasks-Converted --single-file
+          # Include completed tasks too
+          python google-tasks-to-obsidian-converter.py -i Tasks.json --completed keep
+
+          # Export ONLY completed tasks
+          python google-tasks-to-obsidian-converter.py -i Tasks.json --completed only
+
+          # Skip empty/whitespace-only tasks
+          python google-tasks-to-obsidian-converter.py -i Tasks.json --clean
 
           # Single consolidated file (explicit filename)
           python google-tasks-to-obsidian-converter.py -i Tasks.json -o ~/Tasks-Converted/tasks.md --single-file
@@ -448,8 +530,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         Notes
 
         - --obsidian is the default output mode. Use --md if you want plain markdown.
-        - In Obsidian mode, each output file starts with YAML frontmatter and each task ends with tags.
-        - Tasks are exported as Markdown checkboxes compatible with Obsidian's Tasks plugin.
+        - Nested tasks/subtasks are exported with indentation where parent/child relationships exist.
+        - --completed controls whether completed tasks are exported:
+            skip (default), keep, only
+        - --clean drops tasks whose title, notes, and links are all empty/whitespace.
         """
     ).strip()
 
@@ -459,7 +543,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "google-tasks-to-obsidian-converter.py [--help] "
             "[-i INPUT] [-o OUTPUT] "
             "[--obsidian (default) | --md] "
-            "[--collapse] [--single-file] [--dry-run] [--info]"
+            "[--collapse] [--single-file] [--dry-run] [--info] "
+            "[--completed {skip,keep,only}] [--clean]"
         ),
         description="Convert Google Tasks Takeout JSON to Markdown (Obsidian-ready by default).",
         epilog=epilog,
@@ -515,6 +600,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print warnings/info when task list titles are modified for filename safety.",
     )
+    parser.add_argument(
+        "--completed",
+        choices=["skip", "keep", "only"],
+        default="skip",
+        help="How to handle completed tasks: skip (default), keep, or only.",
+    )
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="Skip tasks that are empty/whitespace-only (title+notes+links).",
+    )
 
     return parser
 
@@ -548,6 +644,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         fmt=fmt,
         single_file=bool(args.single_file),
         dry_run=bool(args.dry_run),
+        completed_mode=str(args.completed),
+        clean=bool(args.clean),
     )
     return 0
 
